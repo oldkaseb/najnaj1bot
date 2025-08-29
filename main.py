@@ -188,7 +188,7 @@ async def upsert_user(u):
                VALUES ($1,$2,$3,NOW())
                ON CONFLICT (user_id) DO UPDATE SET
                  username=EXCLUDED.username, first_name=EXCLUDED.first_name, last_seen=NOW();""",
-            u.id, u.username, u.first_name or u.full_name
+            u.id, u.username, u.first_name or getattr(u, "full_name", None) or u.username or "کاربر"
         )
 
 async def upsert_chat(c, active: bool = True):
@@ -492,30 +492,64 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await iq.answer(results, cache_time=0, is_personal=True)
 
-# گزارش فوریِ «لحظهٔ ارسال اینلاین»
+# گزارش فوریِ «لحظهٔ ارسال اینلاین» + فallback از cir.query
 async def on_chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """به‌محض ارسال نتیجه اینلاین، گزارش فوری برای مالک می‌فرستد.
+    اگر ردیف iwhispers یافت نشد، از cir.query بازسازی می‌کند."""
     cir = update.chosen_inline_result
     token = cir.result_id
-    async with pool.acquire() as con:
-        row = await con.fetchrow(
-            "SELECT sender_id, receiver_id, receiver_username, text FROM iwhispers WHERE token=$1;",
-            token
-        )
-    if not row:
-        return
-    sender_id = int(row["sender_id"])
-    receiver_id = row["receiver_id"] and int(row["receiver_id"])
-    receiver_username = row["receiver_username"]
 
+    # مقادیر پیش‌فرض
+    sender_id = cir.from_user.id
+    receiver_id = None
+    receiver_username = None
+    text = ""
+
+    # 1) تلاش: خواندن از DB
+    row = None
+    try:
+        async with pool.acquire() as con:
+            row = await con.fetchrow(
+                "SELECT sender_id, receiver_id, receiver_username, text FROM iwhispers WHERE token=$1;",
+                token
+            )
+    except Exception:
+        row = None
+
+    if row:
+        sender_id = int(row["sender_id"])
+        receiver_id = row["receiver_id"] and int(row["receiver_id"])
+        receiver_username = row["receiver_username"]
+        text = row["text"]
+    else:
+        # 2) فallback: بازسازی از cir.query
+        q = (cir.query or "").strip()
+        last = None
+        for m in re.finditer(r"@([A-Za-z0-9_]{5,})", q):
+            last = m
+        if last:
+            receiver_username = last.group(1).lower()
+            text = (q[:last.start()] + q[last.end():]).strip()
+            receiver_id = await try_resolve_user_id_by_username(context, receiver_username)
+        else:
+            text = q  # گیرنده معلوم نیست
+
+    # ساخت منشن‌ها
     s_label = mention_html(sender_id, await get_name_for(sender_id, "کاربر"))
     if receiver_id:
         r_label = mention_html(receiver_id, await get_name_for(receiver_id, "کاربر"))
     else:
         r_label = f"@{receiver_username}" if receiver_username else "گیرنده"
 
-    msg = f"📝 نجوای اینلاین: {s_label} ➜ {r_label} + {row['text']}"
+    # گزارش فوری برای مالک با فرمت خواسته‌شده
+    msg = f"📝 نجوای اینلاین: {s_label} ➜ {r_label} + {text}"
     try:
-        await context.bot.send_message(ADMIN_ID, msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        await context.bot.send_message(
+            ADMIN_ID,
+            msg,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True
+        )
     except Exception:
         pass
 
@@ -1183,9 +1217,12 @@ def main():
     app.add_handler(ChosenInlineResultHandler(on_chosen_inline_result))
     app.add_handler(CallbackQueryHandler(on_inline_show, pattern=r"^iws:.+"))
 
-    # نمایش نجوای ریپلای (id جدید و نسخه‌ی قدیمی)
+    # نمایش نجوای ریفلای (id جدید و نسخه‌ی قدیمی)
     app.add_handler(CallbackQueryHandler(on_show_by_id, pattern=r"^showid:\d+$"))
     app.add_handler(CallbackQueryHandler(on_show_cb, pattern=r"^show:\-?\d+:\d+:\d+$"))
+
+    # چک عضویت از داخل گروه (دکمه شیشه‌ای)
+    app.add_handler(CallbackQueryHandler(on_checksub_group, pattern=r"^gjchk:\d+:-?\d+:\d+$"))
 
     # ظرفیت نصب و اخراج
     app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
