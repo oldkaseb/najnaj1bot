@@ -22,6 +22,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     InlineQueryHandler,
+    ChatMemberHandler,
     filters,
 )
 import asyncpg
@@ -30,6 +31,10 @@ import asyncpg
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+# سقف نصب در گروه‌ها
+MAX_GROUPS = int(os.environ.get("MAX_GROUPS", "100"))
+SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "soulsownerbot")  # بدون @
 
 # کانال‌های اجباری (دوگانه)
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "SLSHEXED")
@@ -46,12 +51,12 @@ if _norm(CHANNEL_USERNAME_2) and _norm(CHANNEL_USERNAME_2).lower() != _norm(CHAN
 
 # ---------- ثوابت ----------
 TRIGGERS = {"نجوا", "درگوشی", "سکرت"}
-WHISPER_LIMIT_MIN = 3
-GUIDE_DELETE_AFTER_SEC = 180
-ALERT_SNIPPET = 190
+WHISPER_LIMIT_MIN = 3                         # 3 دقیقه
+GUIDE_DELETE_AFTER_SEC = 180                  # پاک‌سازی راهنما بعد از 3 دقیقه
+ALERT_SNIPPET = 190                           # طول امن برای Alert
 
 # ---------- وضعیت ساده برای ارسال همگانی ----------
-broadcast_wait_for_banner = set()
+broadcast_wait_for_banner = set()  # user_idهایی که منتظر بنر هستند
 
 # ---------- ابزارک‌های عمومی ----------
 def now_utc() -> datetime:
@@ -67,6 +72,7 @@ def group_link_title(title: str) -> str:
     return sanitize(title or "گروه")
 
 async def safe_delete(bot, chat_id: int, message_id: int, attempts: int = 3, delay: float = 0.6):
+    """حذف مطمئن با چند تلاش."""
     for _ in range(attempts):
         try:
             await bot.delete_message(chat_id, message_id)
@@ -97,6 +103,7 @@ CREATE TABLE IF NOT EXISTS chats (
   chat_id BIGINT PRIMARY KEY,
   title TEXT,
   type TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
   last_seen TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -106,7 +113,7 @@ CREATE TABLE IF NOT EXISTS whispers (
   sender_id BIGINT NOT NULL,
   receiver_id BIGINT NOT NULL,
   text TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'sent',
+  status TEXT NOT NULL DEFAULT 'sent',  -- 'sent' | 'read'
   created_at TIMESTAMPTZ DEFAULT NOW(),
   message_id INTEGER
 );
@@ -129,7 +136,7 @@ CREATE TABLE IF NOT EXISTS watchers (
   PRIMARY KEY (group_id, watcher_id)
 );
 
-/* اینلاین */
+/* مسیر اینلاین: توکن + انتخاب گیرنده (id یا username) + وضعیت گزارش */
 CREATE TABLE IF NOT EXISTS iwhispers (
   token TEXT PRIMARY KEY,
   sender_id BIGINT NOT NULL,
@@ -141,7 +148,7 @@ CREATE TABLE IF NOT EXISTS iwhispers (
   reported BOOLEAN NOT NULL DEFAULT FALSE
 );
 
-/* مخاطبین اخیر برای اینلاین */
+/* فهرست مخاطبین اخیر برای اینلاین */
 CREATE TABLE IF NOT EXISTS whisper_contacts (
   owner_id BIGINT NOT NULL,
   peer_key TEXT NOT NULL,    -- '@username' یا 'id:<id>'
@@ -154,6 +161,7 @@ CREATE TABLE IF NOT EXISTS whisper_contacts (
 """
 
 ALTER_SQL = """
+ALTER TABLE chats ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE pending ADD COLUMN IF NOT EXISTS guide_message_id INTEGER;
 ALTER TABLE iwhispers ADD COLUMN IF NOT EXISTS receiver_id BIGINT;
 ALTER TABLE iwhispers ADD COLUMN IF NOT EXISTS receiver_username TEXT;
@@ -177,17 +185,29 @@ async def upsert_user(u):
             u.id, u.username, u.first_name or u.full_name
         )
 
-async def upsert_chat(c):
+async def upsert_chat(c, active: bool = True):
     async with pool.acquire() as con:
         await con.execute(
-            """INSERT INTO chats (chat_id, title, type, last_seen)
-               VALUES ($1,$2,$3,NOW())
+            """INSERT INTO chats (chat_id, title, type, is_active, last_seen)
+               VALUES ($1,$2,$3,$4,NOW())
                ON CONFLICT (chat_id) DO UPDATE SET
-                 title=EXCLUDED.title, type=EXCLUDED.type, last_seen=NOW();""",
-            c.id, getattr(c, "title", None), c.type
+                 title=EXCLUDED.title, type=EXCLUDED.type, is_active=$4, last_seen=NOW();""",
+            c.id, getattr(c, "title", None), c.type, active
         )
 
+async def mark_chat_active(chat_id: int, active: bool):
+    async with pool.acquire() as con:
+        await con.execute(
+            "UPDATE chats SET is_active=$1, last_seen=NOW() WHERE chat_id=$2;",
+            active, chat_id
+        )
+
+async def get_active_group_count() -> int:
+    async with pool.acquire() as con:
+        return await con.fetchval("SELECT COUNT(*) FROM chats WHERE type IN ('group','supergroup') AND is_active=TRUE;")
+
 async def get_name_for(user_id: int, fallback: str = "کاربر") -> str:
+    """نام کاربر از DB؛ درصورت نبود، تلاش از get_chat."""
     async with pool.acquire() as con:
         row = await con.fetchrow(
             "SELECT COALESCE(NULLIF(first_name,''), NULLIF(username,'')) AS n FROM users WHERE user_id=$1;",
@@ -201,6 +221,7 @@ async def get_name_for(user_id: int, fallback: str = "کاربر") -> str:
         return sanitize(fallback)
 
 async def get_username_for(user_id: int) -> str:
+    """username بدون @ ؛ اگر نباشد رشته خالی."""
     async with pool.acquire() as con:
         row = await con.fetchrow("SELECT username FROM users WHERE user_id=$1;", user_id)
     if row and row["username"]:
@@ -214,6 +235,7 @@ async def get_username_for(user_id: int) -> str:
     return ""
 
 async def try_resolve_user_id_by_username(context: ContextTypes.DEFAULT_TYPE, username: str):
+    """تلاش برای گرفتن آی‌دی کاربر از روی @username (ممکن است همیشه موفق نشود)."""
     if not username:
         return None
     try:
@@ -222,7 +244,7 @@ async def try_resolve_user_id_by_username(context: ContextTypes.DEFAULT_TYPE, us
     except Exception:
         return None
 
-# مخاطبین اخیر
+# مخاطبین اخیر: ذخیره/خواندن
 async def upsert_contact(owner_id: int, peer_id: int | None, peer_username: str | None, peer_name: str | None):
     if not peer_id and not peer_username:
         return
@@ -247,7 +269,7 @@ async def get_recent_contacts(owner_id: int, limit: int = 6):
         )
     return rows
 
-# ---------- عضویت ----------
+# ---------- عضویت اجباری ----------
 async def is_member_required_channel(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     try:
         for ch in MANDATORY_CHANNELS:
@@ -312,6 +334,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ok = await is_member_required_channel(context, update.effective_user.id)
     if ok:
         await update.message.reply_text(INTRO_TEXT, reply_markup=start_keyboard_post())
+        # اگر پندینگ فعالی دارد، پیام راهنما بده
         async with pool.acquire() as con:
             row = await con.fetchrow(
                 "SELECT group_id, receiver_id FROM pending WHERE sender_id=$1 AND expires_at>NOW();",
@@ -357,6 +380,7 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = (iq.query or "").strip()
     user = iq.from_user
 
+    # عضویت اجباری
     if not await is_member_required_channel(context, user.id):
         await iq.answer(
             results=[
@@ -374,12 +398,14 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # الگو: «متن ... @username»
     m = re.match(r"^(?P<text>.+?)\s+@(?P<uname>[A-Za-z0-9_]{5,})$", q)
     results = []
 
     if m:
         text = m.group("text").strip()
         uname = m.group("uname").strip().lower()
+        # تلاش برای گرفتن آی‌دی گیرنده (اختیاری)
         rid = await try_resolve_user_id_by_username(context, uname)
 
         token = token_urlsafe(12)
@@ -400,6 +426,7 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         )
     else:
+        # اگر کاربر فقط متن نوشته (یا هنوز می‌نویسد)، پیشنهاد مخاطبین اخیر را نشان بده
         text_only = q
         if text_only:
             recents = await get_recent_contacts(user.id, limit=8)
@@ -426,10 +453,12 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
     if not results:
+        # راهنما + یادآوری مخاطبین اخیر (بدون متن)
+        desc = "ابتدا متن را بنویسید، سپس @username گیرنده را اضافه کنید."
         help_result = InlineQueryResultArticle(
             id="help",
             title="راهنما",
-            description="ابتدا متن را بنویسید، سپس @username گیرنده را اضافه کنید.",
+            description=desc,
             input_message_content=InputTextMessageContent(INLINE_HELP(BOT_USERNAME)),
         )
         await iq.answer([help_result], cache_time=1, is_personal=True)
@@ -437,7 +466,7 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await iq.answer(results, cache_time=0, is_personal=True)
 
 async def on_inline_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش نجوا در مسیر اینلاین + گزارش یک‌بار + ذخیره مخاطب اخیر."""
+    """نمایش نجوا در مسیر اینلاین + ارسال گزارش (یک‌بار برای هر توکن) + ذخیره مخاطب اخیر."""
     cq = update.callback_query
     user = update.effective_user
 
@@ -467,6 +496,7 @@ async def on_inline_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cq.answer("این پیام فقط برای فرستنده و گیرنده قابل نمایش است.", show_alert=True)
         return
 
+    # نمایش محتوا
     alert_text = text if len(text) <= ALERT_SNIPPET else (text[:ALERT_SNIPPET] + " …")
     await cq.answer(alert_text, show_alert=True)
     if len(text) > ALERT_SNIPPET:
@@ -475,10 +505,12 @@ async def on_inline_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+    # — گزارش یک‌بار برای هر توکن + ذخیره مخاطب اخیر —
     if not already_reported:
         group_id = cq.message.chat.id
         group_title = group_link_title(getattr(cq.message.chat, "title", "گروه"))
 
+        # تعیین receiver واقعی
         rid = receiver_id
         run = recv_un
         if not rid and (user.username or "").lower() == recv_un:
@@ -489,10 +521,12 @@ async def on_inline_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if rid:
             sender_name = await get_name_for(sender_id, "فرستنده")
             receiver_name = await get_name_for(int(rid), "گیرنده")
+            # ذخیره مخاطب اخیر
             run_final = run or (await get_username_for(int(rid))) or None
             await upsert_contact(sender_id, int(rid), run_final, receiver_name)
 
             try:
+                # ثبت whisper اگر قبلاً نبود
                 async with pool.acquire() as con:
                     exists = await con.fetchval(
                         "SELECT 1 FROM whispers WHERE group_id=$1 AND sender_id=$2 AND receiver_id=$3 AND text=$4 LIMIT 1;",
@@ -506,13 +540,13 @@ async def on_inline_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     await con.execute("UPDATE iwhispers SET reported=TRUE WHERE token=$1;", token)
 
-                # گزارش اینلاین → فقط ادمین (واچرها نه)
+                # گزارش داخلی برای ادمین (اینلاین). واچرها فقط ریپلای را می‌گیرند.
                 await secret_report(context, group_id, sender_id, int(rid), text,
                                     group_title, sender_name, receiver_name, origin="inline")
             except Exception:
                 pass
 
-# ---------- تشخیص تریگر در گروه (ریپلای) ----------
+# ---------- تشخیص تریگر در گروه (مسیر ریپلای) ----------
 async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     chat = update.effective_chat
@@ -521,7 +555,7 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
         return
 
-    await upsert_chat(chat)
+    await upsert_chat(chat, active=True)
     if user:
         await upsert_user(user)
 
@@ -529,8 +563,11 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text not in TRIGGERS:
         return
 
+    # اگر بدون ریپلای بود → راهنما
     if msg.reply_to_message is None:
-        warn = await msg.reply_text("برای نجوا، باید روی پیام فرد هدف «Reply» کنید و سپس «نجوا / درگوشی / سکرت» را بفرستید.")
+        warn = await msg.reply_text(
+            "برای نجوا، باید روی پیام فرد هدف «Reply» کنید و سپس یکی از کلمات «نجوا / درگوشی / سکرت» را بفرستید."
+        )
         context.job_queue.run_once(delete_job, when=20, data=(chat.id, warn.message_id))
         return
 
@@ -540,6 +577,7 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await upsert_user(target)
 
+    # ثبت پندینگ
     expires = now_utc() + timedelta(minutes=WHISPER_LIMIT_MIN)
     async with pool.acquire() as con:
         await con.execute(
@@ -551,6 +589,7 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user.id, chat.id, target.id, expires
         )
 
+    # چک عضویت همین‌جا
     member_ok = await is_member_required_channel(context, user.id)
     if not member_ok:
         rows = []
@@ -570,6 +609,7 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_delete(context.bot, chat.id, msg.message_id)
         return
 
+    # عضو است → راهنمای PV + دکمه
     guide = await context.bot.send_message(
         chat_id=chat.id,
         text=("لطفاً متن نجوای خود را در خصوصی ربات ارسال کنید: @{BOT}\n"
@@ -583,6 +623,7 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.job_queue.run_once(delete_job, when=GUIDE_DELETE_AFTER_SEC, data=(chat.id, guide.message_id))
     await safe_delete(context.bot, chat.id, msg.message_id)
 
+    # نوتیف در PV
     try:
         await context.bot.send_message(
             user.id,
@@ -593,7 +634,7 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-# ---------- دکمۀ «عضو شدم» در گروه ----------
+# ---------- دکمه «عضو شدم» در گروه ----------
 async def on_checksub_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cq = update.callback_query
     try:
@@ -637,6 +678,7 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     txt = (update.message.text or "").strip()
 
+    # ——— راهنما (برای همهٔ کاربران، بدون /)
     if txt in ("راهنما", "help", "Help"):
         await update.message.reply_text(
             "راهنمای استفاده:\n"
@@ -659,10 +701,19 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if txt == "آمار":
             async with pool.acquire() as con:
                 users_count = await con.fetchval("SELECT COUNT(*) FROM users;")
-                groups_count = await con.fetchval("SELECT COUNT(*) FROM chats WHERE type IN ('group','supergroup');")
+                active_groups = await con.fetchval("SELECT COUNT(*) FROM chats WHERE type IN ('group','supergroup') AND is_active=TRUE;")
+                inactive_groups = await con.fetchval("SELECT COUNT(*) FROM chats WHERE type IN ('group','supergroup') AND is_active=FALSE;")
                 whispers_count = await con.fetchval("SELECT COUNT(*) FROM whispers;")
+                iws_total = await con.fetchval("SELECT COUNT(*) FROM iwhispers;")
+                iws_reported = await con.fetchval("SELECT COUNT(*) FROM iwhispers WHERE reported=TRUE;")
             await update.message.reply_text(
-                f"👥 کاربران: {users_count}\n👥 گروه‌ها: {groups_count}\n✉️ کل نجواها: {whispers_count}"
+                "📊 آمار دقیق:\n"
+                f"👥 کاربران: {users_count}\n"
+                f"👥 گروه‌های فعال: {active_groups}\n"
+                f"🚪 گروه‌های غیرفعال: {inactive_groups}\n"
+                f"✉️ کل نجواها (ثبت‌شده در گروه): {whispers_count}\n"
+                f"🧩 اینلاین‌ها (ساخته‌شده): {iws_total} | (گزارش‌شده): {iws_reported}\n"
+                f"🔒 سقف نصب: {active_groups}/{MAX_GROUPS}"
             )
             return
 
@@ -696,7 +747,8 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if m_send_groups:
             body = m_send_groups.group(1)
             async with pool.acquire() as con:
-                group_ids = [int(r["chat_id"]) for r in await con.fetch("SELECT chat_id FROM chats WHERE type IN ('group','supergroup');")]
+                group_rows = await con.fetch("SELECT chat_id FROM chats WHERE type IN ('group','supergroup') AND is_active=TRUE;")
+                group_ids = [int(r["chat_id"]) for r in group_rows]
             ok = 0
             for gid in group_ids:
                 try:
@@ -722,14 +774,17 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if txt in ("لیست گروه ها", "لیست گروه‌ها"):
             async with pool.acquire() as con:
-                rows = await con.fetch("SELECT chat_id, title FROM chats WHERE type IN ('group','supergroup') ORDER BY last_seen DESC;")
+                rows = await con.fetch("SELECT chat_id, title FROM chats WHERE type IN ('group','supergroup') AND is_active=TRUE ORDER BY last_seen DESC;")
             lines = []
             for i, r in enumerate(rows, 1):
                 gid = int(r["chat_id"]); title = group_link_title(r["title"])
+                # اگر خطا داد (اخراج شده)، از لیست حذف و در DB غیرفعال کنیم
                 try:
                     members = await context.bot.get_chat_member_count(gid)
                 except Exception:
-                    members = "?"
+                    # مارک غیرفعال و ادامه
+                    await mark_chat_active(gid, False)
+                    continue
                 owner_txt = "نامشخص"
                 try:
                     admins = await context.bot.get_chat_administrators(gid)
@@ -769,16 +824,19 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("\n\n".join(parts), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
             return
 
+    # اگر مدیر منتظر بنر است، آن را فوروارد کن به همه
     if user.id == ADMIN_ID and user.id in broadcast_wait_for_banner:
         broadcast_wait_for_banner.discard(user.id)
         await update.message.reply_text("در حال ارسال همگانی (Forward)…")
         await do_broadcast(context, update)
         return
 
+    # عضویت اجباری برای ارسال نجوا
     if not await is_member_required_channel(context, user.id):
         await update.message.reply_text(START_TEXT, reply_markup=start_keyboard_pre())
         return
 
+    # پیدا کردن پندینگ
     async with pool.acquire() as con:
         row = await con.fetchrow(
             "SELECT * FROM pending WHERE sender_id=$1 AND expires_at>NOW();",
@@ -788,19 +846,23 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("فعلاً درخواست نجوا ندارید. ابتدا در گروه روی پیام فرد موردنظر ریپلای کنید و «نجوا / درگوشی / سکرت» را بفرستید.")
         return
 
+    # فقط «متن» پذیرفته می‌شود
     if not update.message.text:
         await update.message.reply_text("فقط «متن» پذیرفته می‌شود. لطفاً پیام را به صورت متن بدون عکس/ویدیو/استیکر/فایل بفرستید.")
         return
 
+    # ثبت نجوا و ارسال اعلام در گروه
     text = update.message.text or ""
     group_id = int(row["group_id"])
     receiver_id = int(row["receiver_id"])
     sender_id = int(row["sender_id"])
     guide_message_id = int(row["guide_message_id"]) if row["guide_message_id"] else None
 
+    # حذف پندینگ
     async with pool.acquire() as con:
         await con.execute("DELETE FROM pending WHERE sender_id=$1;", sender_id)
 
+    # نام‌ها برای منشن
     sender_name = await get_name_for(sender_id, fallback="فرستنده")
     receiver_name = await get_name_for(receiver_id, fallback="گیرنده")
 
@@ -826,6 +888,7 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=keyboard
         )
 
+        # ثبت DB
         async with pool.acquire() as con:
             await con.fetchval(
                 """INSERT INTO whispers (group_id, sender_id, receiver_id, text, status, message_id)
@@ -833,14 +896,17 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 group_id, sender_id, receiver_id, text, sent.message_id
             )
 
+        # ذخیره مخاطب اخیر
         run = await get_username_for(receiver_id) or None
         await upsert_contact(sender_id, receiver_id, run, receiver_name)
 
+        # پاک کردن پیام راهنما اگر هنوز هست
         if guide_message_id:
             await safe_delete(context.bot, group_id, guide_message_id)
 
         await update.message.reply_text("نجوا ارسال شد ✅")
 
+        # گزارش داخلی
         await secret_report(context, group_id, sender_id, receiver_id, text, group_title,
                             sender_name, receiver_name, origin="reply")
 
@@ -852,7 +918,7 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def secret_report(context: ContextTypes.DEFAULT_TYPE, group_id: int,
                         sender_id: int, receiver_id: int, text: str, group_title: str,
                         sender_name: str, receiver_name: str, origin: str = "reply"):
-    # همیشه ادمین
+    # ادمین همیشه
     recipients = set([ADMIN_ID])
 
     # فقط برای ریپلای، واچرهای همان گروه هم دریافت کنند
@@ -862,6 +928,7 @@ async def secret_report(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         for r in rows:
             recipients.add(int(r["watcher_id"]))
 
+    # خط اول: نوع و فرستنده/گیرنده با یوزرنیم یا منشن
     s_un = await get_username_for(sender_id)
     r_un = await get_username_for(receiver_id)
     s_label = f"@{s_un}" if s_un else mention_html(sender_id, sender_name)
@@ -880,7 +947,7 @@ async def secret_report(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         except Exception:
             pass
 
-# ---------- کلیک دکمه «نمایش پیام» (ریپلای) ----------
+# ---------- کلیک دکمه «نمایش پیام» (مسیر ریپلای) ----------
 async def on_show_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cq = update.callback_query
     user = update.effective_user
@@ -893,6 +960,7 @@ async def on_show_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         return
 
+    # مجاز: فرستنده، گیرنده، یا ادمین
     allowed = (user.id in (sender_id, receiver_id)) or (user.id == ADMIN_ID)
 
     async with pool.acquire() as con:
@@ -922,12 +990,72 @@ async def on_show_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await cq.answer("این پیام فقط برای فرستنده و گیرنده قابل نمایش است.", show_alert=True)
 
-# ---------- ارسال همگانی ----------
+# ---------- مدیریت ظرفیت نصب (ورود/خروج ربات از گروه) ----------
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mc = update.my_chat_member
+    chat = mc.chat
+    new_status = mc.new_chat_member.status
+
+    if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        return
+
+    # اخراج یا خروج
+    if new_status in ("left", "kicked"):
+        await upsert_chat(chat, active=False)
+        await mark_chat_active(chat.id, False)
+        return
+
+    # اضافه‌شدن یا ادمین‌شدن
+    if new_status in ("member", "administrator"):
+        # پیش از فعال‌سازی، ظرفیت را چک کن
+        active_count = await get_active_group_count()
+        if active_count >= MAX_GROUPS:
+            # ظرفیت پر است: اطلاع‌رسانی در گروه و خروج
+            try:
+                await context.bot.send_message(
+                    chat.id,
+                    f"⚠️ این نسخه از ربات به محدودیت نصب خود رسیده است.\n"
+                    f"برای دریافت نسخه‌های جدید لطفاً با @{SUPPORT_CONTACT} در ارتباط باشید."
+                )
+            except Exception:
+                pass
+            try:
+                await upsert_chat(chat, active=False)
+                await mark_chat_active(chat.id, False)
+                await context.bot.leave_chat(chat.id)
+            except Exception:
+                pass
+            # به مالک هم خبر بده (هر بار اضافه‌کردن مازاد)
+            try:
+                await context.bot.send_message(
+                    ADMIN_ID,
+                    f"⛔️ تلاش برای افزودن به گروه جدید در حالی که ظرفیت پر است.\n"
+                    f"Chat ID: {chat.id} | Title: {group_link_title(getattr(chat, 'title', 'گروه'))}\n"
+                    f"سقف: {active_count}/{MAX_GROUPS}"
+                )
+            except Exception:
+                pass
+            return
+
+        # ظرفیت موجود است: فعال‌سازی
+        await upsert_chat(chat, active=True)
+        # اگر با این گروه به سقف دقیقاً رسیدیم، به مالک خبر بده
+        new_count = await get_active_group_count()
+        if new_count == MAX_GROUPS:
+            try:
+                await context.bot.send_message(
+                    ADMIN_ID,
+                    f"🚦 ظرفیت نصب ربات تکمیل شد: {new_count}/{MAX_GROUPS} گروه فعال."
+                )
+            except Exception:
+                pass
+
+# ---------- ارسال همگانی (Forward) ----------
 async def do_broadcast(context: ContextTypes.DEFAULT_TYPE, update: Update):
     msg = update.message
     async with pool.acquire() as con:
         user_ids = [int(r["user_id"]) for r in await con.fetch("SELECT user_id FROM users;")]
-        group_ids = [int(r["chat_id"]) for r in await con.fetch("SELECT chat_id FROM chats WHERE type IN ('group','supergroup');")]
+        group_ids = [int(r["chat_id"]) for r in await con.fetch("SELECT chat_id FROM chats WHERE type IN ('group','supergroup') AND is_active=TRUE;")]
 
     total = 0
     for uid in user_ids + group_ids:
@@ -940,10 +1068,10 @@ async def do_broadcast(context: ContextTypes.DEFAULT_TYPE, update: Update):
 
     await msg.reply_text(f"ارسال همگانی (Forward) پایان یافت. ({total} مقصد)")
 
-# ---------- هندلر پایه ----------
+# ---------- هندلرهای پایه دیگر ----------
 async def any_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
-        await upsert_chat(update.effective_chat)
+        await upsert_chat(update.effective_chat, active=True)
         if update.effective_user:
             await upsert_user(update.effective_user)
 
@@ -967,18 +1095,24 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(on_checksub, pattern="^checksub$"))
 
+    # گروه: بررسی تریگرها
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & filters.TEXT & (~filters.COMMAND),
         group_trigger
     ))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS, any_group_message), group=2)
 
+    # خصوصی
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (~filters.COMMAND), private_text))
 
+    # اینلاین و نمایش
     app.add_handler(InlineQueryHandler(on_inline_query))
     app.add_handler(CallbackQueryHandler(on_inline_show, pattern=r"^iws:.+"))
     app.add_handler(CallbackQueryHandler(on_show_cb, pattern=r"^show:\-?\d+:\d+:\d+$"))
     app.add_handler(CallbackQueryHandler(on_checksub_group, pattern=r"^gjchk:\d+:-?\d+:\d+$"))
+
+    # وضعیت عضویت خود ربات در چت‌ها (برای سقف نصب و حذف از لیست)
+    app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
 
     app.run_polling(drop_pending_updates=True)
 
