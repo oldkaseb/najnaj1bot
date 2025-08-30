@@ -53,6 +53,7 @@ if _norm(CHANNEL_USERNAME_2) and _norm(CHANNEL_USERNAME_2).lower() != _norm(CHAN
 
 # ---------- ثوابت ----------
 TRIGGERS = {"نجوا", "درگوشی", "سکرت"}
+KEEP_TRIGGER_MESSAGE = True  # ✅ پیام دستور در گروه پاک نشود
 GUIDE_DELETE_AFTER_SEC = 180
 ALERT_SNIPPET = 190
 
@@ -62,9 +63,6 @@ FAR_FUTURE = datetime(2099, 1, 1, tzinfo=timezone.utc)
 broadcast_wait_for_banner = set()
 
 # ---------- ابزارک‌های عمومی ----------
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
 def sanitize(name: str) -> str:
     return (name or "کاربر").replace("<", "").replace(">", "")
 
@@ -95,7 +93,6 @@ async def _delete_after(bot, chat_id: int, message_id: int, delay_sec: int):
         pass
 
 def schedule_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, delay_sec: int):
-    # جایگزین run_once(JobQueue)
     context.application.create_task(_delete_after(context.bot, chat_id, message_id, delay_sec))
 
 # ---------- دیتابیس ----------
@@ -123,7 +120,7 @@ CREATE TABLE IF NOT EXISTS whispers (
   sender_id BIGINT NOT NULL,
   receiver_id BIGINT NOT NULL,
   text TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'sent',  -- 'sent' | 'read'
+  status TEXT NOT NULL DEFAULT 'sent',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   message_id INTEGER
 );
@@ -393,7 +390,7 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = (iq.query or "").strip()
     user = iq.from_user
 
-    # ℹ️ اینلاین را بلوکه نکن؛ فقط درصورت عدم عضویت، کارت اطلاع‌رسانی اضافه می‌کنیم
+    # ℹ️ اینلاین را بلوکه نکن؛ اگر عضو نیست فقط کارت اطلاع‌رسانی بده
     join_info = None
     try:
         is_member = await is_member_required_channel(context, user.id)
@@ -411,7 +408,7 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     results = []
 
-    # یوزرنیم 3+ کاراکتری
+    # یوزرنیم 3+ کاراکتری، آخرین @username را معیار قرار بده
     uname_match = None
     for m in re.finditer(r"@([A-Za-z0-9_]{3,})", q):
         uname_match = m
@@ -450,6 +447,7 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         )
     else:
+        # بدون username → از مخاطبین اخیر پیشنهاد بده
         recents = await get_recent_contacts(user.id, limit=8)
         base_text = q
         for r in recents:
@@ -654,6 +652,7 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user.id, chat.id, target.id, FAR_FUTURE, msg.reply_to_message.message_id
         )
 
+    # مخاطب اخیر
     await upsert_contact(user.id, target.id, target.username or None, target.first_name or None)
 
     member_ok = await is_member_required_channel(context, user.id)
@@ -672,7 +671,8 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         schedule_delete(context, chat.id, m.message_id, GUIDE_DELETE_AFTER_SEC)
-        await safe_delete(context.bot, chat.id, msg.message_id)
+        if not KEEP_TRIGGER_MESSAGE:
+            await safe_delete(context.bot, chat.id, msg.message_id)
         return
 
     guide = await context.bot.send_message(
@@ -685,7 +685,8 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await con.execute("UPDATE pending SET guide_message_id=$1 WHERE sender_id=$2;", guide.message_id, user.id)
 
     schedule_delete(context, chat.id, guide.message_id, GUIDE_DELETE_AFTER_SEC)
-    await safe_delete(context.bot, chat.id, msg.message_id)
+    if not KEEP_TRIGGER_MESSAGE:
+        await safe_delete(context.bot, chat.id, msg.message_id)
 
     try:
         await context.bot.send_message(
@@ -754,7 +755,7 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # شاخه‌های ادمین (به‌صورت قبلی)
+    # شاخه‌های ادمین
     if user.id == ADMIN_ID:
         if txt == "ارسال همگانی":
             broadcast_wait_for_banner.add(user.id)
@@ -1182,6 +1183,9 @@ def main():
     # نمایش نجوای ریپلای (id جدید و نسخه‌ی قدیمی)
     app.add_handler(CallbackQueryHandler(on_show_by_id, pattern=r"^showid:\d+$"))
     app.add_handler(CallbackQueryHandler(on_show_cb, pattern=r"^show:\-?\d+:\d+:\d+$"))
+
+    # دکمهٔ بررسی عضویت در گروه
+    app.add_handler(CallbackQueryHandler(on_checksub_group, pattern=r"^gjchk:\d+:-?\d+:\d+$"))
 
     # ظرفیت نصب و اخراج
     app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
