@@ -952,7 +952,7 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # پندینگ فعال
 async def some_function():
     async with pool.acquire() as con:  # ✅ مجاز
-    row = await con.fetchrow("SELECT * FROM pending WHERE sender_id=$1 AND expires_at>NOW();", user.id)
+        row = await con.fetchrow("SELECT * FROM pending WHERE sender_id=$1 AND expires_at>NOW();", user.id)
 
 if row and update.message.text:
     await update.message.reply_text(
