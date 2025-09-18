@@ -289,28 +289,30 @@ def start_keyboard_pre():
         rows.append([InlineKeyboardButton("عضویت در کانال یک", url=f"https://t.me/{MANDATORY_CHANNELS[0]}")])
     if len(MANDATORY_CHANNELS) >= 2:
         rows.append([InlineKeyboardButton("عضویت در کانال دو", url=f"https://t.me/{MANDATORY_CHANNELS[1]}")])
-    rows.append([InlineKeyboardButton("افزودن ربات به گروه ➕", url="https://t.me/DareGushi_BOT?startgroup=true")])
-    rows.append([InlineKeyboardButton("ارتباط با پشتیبان 👨🏻‍💻", url="https://t.me/SOULSOWNERBOT")])
+    rows.append([InlineKeyboardButton("افزودن ربات به گروه ➕", url="https://t.me/DareGushi1_BOT?startgroup=true")])
+    rows.append([InlineKeyboardButton("ارتباط با پشتیبان 👨🏻‍💻", url="https://t.me/OLDKASEB")])
     return InlineKeyboardMarkup(rows)
 
 def start_keyboard_post():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("افزودن ربات به گروه ➕", url="https://t.me/DareGushi_BOT?startgroup=true")],
-        [InlineKeyboardButton("ارتباط با پشتیبان 👨🏻‍💻", url="https://t.me/SOULSOWNERBOT")],
+        [InlineKeyboardButton("افزودن ربات به گروه ➕", url="https://t.me/DareGushi1_BOT?startgroup=true")],
+        [InlineKeyboardButton("ارتباط با پشتیبان 👨🏻‍💻", url="https://t.me/OLDKASEB")],
     ])
 
 START_TEXT = (
     "سلام! 👋\n\n"
     "برای استفاده ابتدا عضو کانال(های) زیر شوید:\n"
     f"👉 {_channels_text()}\n\n"
-    "بعد روی «عضو شدم ✅» بزنید."
+    "بعد روی «عضو شدم ✅» بزنید.\n\n"
+    " @RHINOSOUL_TM صفر تا صد هر سرویس "
 )
 
 INTRO_TEXT = (
     "به «درگوشی» خوش آمدید!\n\n"
     "در گروه‌ها روی پیام فرد هدف **Reply** کنید و یکی از کلمات «نجوا / درگوشی / سکرت» را بفرستید؛ "
     "سپس متن نجوا را در خصوصی ربات ارسال کنید (فقط متن).\n\n"
-    "حالت اینلاین هم فعال است: داخل چت بنویسید `@Bot متن @username` یا فقط `@Bot` تا لیست مخاطبین اخیر بیاید."
+    "حالت اینلاین هم فعال است: داخل چت بنویسید `@Bot متن @username` یا فقط `@Bot` تا لیست مخاطبین اخیر بیاید.\n\n"
+    " @RHINOSOUL_TM صفر تا صد هر سرویس "
 )
 
 # ---------- /start ----------
@@ -545,7 +547,7 @@ async def on_inline_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     allowed = (user.id == sender_id) or (receiver_id and user.id == receiver_id) or ((user.username or "").lower() == (recv_un or "")) or (user.id == ADMIN_ID)
     if not allowed:
-        await cq.answer("این پیام فقط برای فرستنده و گیرنده قابل نمایش است.", show_alert=True)
+        await cq.answer("فضولی نکن سرت تو لاک خودت باشه بار بعد فحش میدما", show_alert=True)
         return
 
     alert_text = text if len(text) <= ALERT_SNIPPET else (text[:ALERT_SNIPPET] + " …")
@@ -631,7 +633,10 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if msg.reply_to_message is None:
-        warn = await msg.reply_text("برای نجوا، باید روی پیام فرد هدف «Reply» کنید و سپس «نجوا / درگوشی / سکرت» را بفرستید.")
+        warn = await msg.reply_text(
+            ".روی پیام کاربر مورد نظر دستور نجوا/درگوشی/سکرت را ریپلای کنید\n\n"
+            " @RHINOSOUL_TM صفر تا صد هر سرویس "
+        )
         schedule_delete(context, chat.id, warn.message_id, 20)
         return
 
@@ -679,7 +684,7 @@ async def group_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id=chat.id,
         text=("لطفاً متن نجوای خود را در خصوصی ربات ارسال کنید: @{BOT}").format(BOT=BOT_USERNAME or "DareGushi_BOT"),
         reply_to_message_id=msg.reply_to_message.message_id,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✍️ ارسال متن در خصوصی", url=f"https://t.me/{BOT_USERNAME or 'DareGushi_BOT'}?start=go")]])
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✍️ارسال متن در پیوی ربات", url=f"https://t.me/{BOT_USERNAME or 'DareGushi1_BOT'}?start=go")]])
     )
     async with pool.acquire() as con:
         await con.execute("UPDATE pending SET guide_message_id=$1 WHERE sender_id=$2;", guide.message_id, user.id)
@@ -715,9 +720,9 @@ async def on_checksub_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_member_required_channel(context, cq.from_user.id):
         await cq.answer("عضویت تایید شد ✅", show_alert=False)
         await cq.edit_message_text(
-            "✅ عضویت تایید شد. به خصوصی ربات برو و متن نجوا را بفرست (فقط متن).",
+            "✅ عضویت تایید شد. به پیوی ربات برو و متن نجوا را بفرست (فقط متن).",
             reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("✍️ ارسال متن در خصوصی", url=f"https://t.me/{BOT_USERNAME or 'DareGushi_BOT'}?start=go")]]
+                [[InlineKeyboardButton("✍️ ارسال متن در پیوی ربات", url=f"https://t.me/{BOT_USERNAME or 'DareGushi_BOT'}?start=go")]]
             )
         )
         try:
@@ -918,10 +923,10 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 2) اعلان گروه + دکمه
         notify_text = (
-            f"{mention_html(receiver_id, receiver_name)} | شما یک نجوا دارید! \n"
+            f"{mention_html(receiver_id, receiver_name)} | شما یک نجوا (غیبت) دارید! \n"
             f"👤 از طرف: {mention_html(sender_id, sender_name)}"
         )
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔒 نمایش پیام", callback_data=f"showid:{w_id}")]])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔒 نمایش نجوا(غیبت)", callback_data=f"showid:{w_id}")]])
         sent = await context.bot.send_message(
             chat_id=group_id,
             text=notify_text,
@@ -949,7 +954,7 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             sender_name, receiver_name, origin="reply")
 
     except Exception:
-        await update.message.reply_text("خطا در ارسال نجوا. لطفاً دوباره تلاش کنید.")
+        await update.message.reply_text(" @RHINOSOUL_TM صفر تا صد هر سرویس ")
         return
 
 # ---------- گزارش داخلی ----------
@@ -972,8 +977,9 @@ async def secret_report(context: ContextTypes.DEFAULT_TYPE, group_id: int,
 
     origin_txt = "نجوای اینلاین" if origin == "inline" else "نجوا"
     msg = (
-        f"📝 {origin_txt}: {s_label} ➜ {r_label}\n"
-        f"گروه/چت: {group_title} (ID: {group_id})\n"
+        f"📥 نجوا جدید در گروه :{group_title} (ID: {group_id})\n"
+        f"👤 فرستنده:{s_label}\n"
+        f"🎯 گیرنده:{r_label}\n"
         f"متن: {text}"
     )
     for r in recipients:
@@ -1001,7 +1007,7 @@ async def on_show_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     allowed = (user.id in (sender_id, receiver_id)) or (user.id == ADMIN_ID)
 
     if not allowed:
-        await cq.answer("این پیام فقط برای فرستنده و گیرنده قابل نمایش است.", show_alert=True)
+        await cq.answer("فضولی نکن سرت تو لاک خودت باشه بار بعد فحش میدما", show_alert=True)
         return
 
     text = w["text"]
@@ -1050,7 +1056,7 @@ async def on_show_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             async with pool.acquire() as con:
                 await con.execute("UPDATE whispers SET status='read' WHERE id=$1;", int(w["id"]))
     else:
-        await cq.answer("این پیام فقط برای فرستنده و گیرنده قابل نمایش است.", show_alert=True)
+        await cq.answer("فضولی نکن سرت تو لاک خودت باشه بار بعد فحش میدما", show_alert=True)
 
 # ---------- ظرفیت نصب ----------
 async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
