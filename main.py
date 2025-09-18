@@ -864,7 +864,7 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if txt.strip() == "ادیت خاموش":
             whisper_edit_enabled = False
             await update.message.reply_text("❌ حالت ادیت غیرفعال شد.")
-                return
+            return
 
         m_send_id = re.match(r"^ارسال\s+به\s+(-?\d+)\s+(.+)$", txt)
         if m_send_id:
