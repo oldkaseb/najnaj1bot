@@ -800,8 +800,9 @@ async def on_checksub_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- دریافت متن نجوا در خصوصی ----------
 async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_chat.type != ChatType.PRIVATE:
+    
+    if not await is_member_required_channel(context, user.id):
+        await update.message.reply_text(START_TEXT, reply_markup=start_keyboard_pre())
         return
 
     user = update.effective_user
