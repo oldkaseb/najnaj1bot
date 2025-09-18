@@ -1137,9 +1137,12 @@ async def on_show_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with pool.acquire() as con:
         w = await con.fetchrow("SELECT id, group_id, sender_id, receiver_id, text, status, message_id FROM whispers WHERE id=$1;", wid)
     if not w:
-        await cq.answer("پیام یافت نشد.", show_alert=True); return
+        await cq.answer("پیام یافت نشد.", show_alert=True)
+        return
 
-    sender_id = int(w["sender_id"]); receiver_id = int(w["receiver_id"])
+    sender_id = int(w["sender_id"])
+    receiver_id = int(w["receiver_id"])
+    group_id = int(w["group_id"])
     allowed = (user.id in (sender_id, receiver_id)) or (user.id == ADMIN_ID)
 
     if not allowed:
@@ -1151,32 +1154,34 @@ async def on_show_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await cq.answer(text=alert_text, show_alert=True)
 
     if len(text) > ALERT_SNIPPET:
-        try: await context.bot.send_message(user.id, f"متن کامل نجوا:\n{text}")
-        except Exception: pass
+        try:
+            await context.bot.send_message(user.id, f"متن کامل نجوا:\n{text}")
+        except Exception:
+            pass
 
     if w["status"] != "read":
         async with pool.acquire() as con:
             await con.execute("UPDATE whispers SET status='read' WHERE id=$1;", int(w["id"]))
-    
-    if whisper_edit_enabled and user.id == receiver_id:
-        new_text = (
-            f"📖 نجوای {mention_html(receiver_id, await get_name_for(receiver_id))} خوانده شد.\n"
-            f"👤 از طرف: {mention_html(sender_id, await get_name_for(sender_id))}"
-        )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✍️ پاسخ", callback_data=f"replyto:{sender_id}:{group_id}")],
-            [InlineKeyboardButton("🔁 نمایش مجدد", callback_data=f"reshow:{w['id']}")]
-        ])
-        try:
-            await context.bot.edit_message_text(
-                chat_id=w["group_id"],
-                message_id=w["message_id"],
-                text=new_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard
+
+        if whisper_edit_enabled and user.id == receiver_id:
+            new_text = (
+                f"📖 نجوای {mention_html(receiver_id, await get_name_for(receiver_id))} خوانده شد.\n"
+                f"👤 از طرف: {mention_html(sender_id, await get_name_for(sender_id))}"
             )
-        except Exception:
-            pass
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✍️ پاسخ", callback_data=f"replyto:{sender_id}:{group_id}")],
+                [InlineKeyboardButton("🔁 نمایش مجدد", callback_data=f"reshow:{w['id']}")]
+            ])
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=w["group_id"],
+                    message_id=w["message_id"],
+                    text=new_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard
+                )
+            except Exception:
+                pass
 
 # ---------- نمایش پیام (سازگاری قدیمی) ----------
 async def on_show_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
