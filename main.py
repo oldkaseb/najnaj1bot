@@ -946,14 +946,15 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # عضویت برای ارسال نجوا (مسیر ریپلای)
-    if not await is_member_required_channel(context, user.id):
-        await update.message.reply_text(START_TEXT, reply_markup=start_keyboard_pre()); return
+if not await is_member_required_channel(context, user.id):
+    await update.message.reply_text(START_TEXT, reply_markup=start_keyboard_pre())
+    return
 
-    # پندینگ فعال
-async def some_function():
-    async with pool.acquire() as con:  # ✅ مجاز
-        row = await con.fetchrow("SELECT * FROM pending WHERE sender_id=$1 AND expires_at>NOW();", user.id)
+# واکشی پندینگ
+async with pool.acquire() as con:
+    row = await con.fetchrow("SELECT * FROM pending WHERE sender_id=$1 AND expires_at>NOW();", user.id)
 
+# اگر پندینگ فعال بود و متن دریافت شد → مرحله تأیید
 if row and update.message.text:
     await update.message.reply_text(
         "آیا مطمئنید که این متن را به عنوان نجوا ارسال کنم؟",
@@ -965,15 +966,15 @@ if row and update.message.text:
     )
     return
 
+# اگر پندینگ نبود
+if not row:
+    await update.message.reply_text("فعلاً درخواست نجوا ندارید. ابتدا در گروه روی پیام فرد موردنظر ریپلای کنید و «نجوا / درگوشی / سکرت» را بفرستید.")
+    return
 
-    if not row:
-        await update.message.reply_text("فعلاً درخواست نجوا ندارید. ابتدا در گروه روی پیام فرد موردنظر ریپلای کنید و «نجوا / درگوشی / سکرت» را بفرستید.")
-        return
-
-    # فقط متن
-    if not update.message.text:
-        await update.message.reply_text("فقط «متن» پذیرفته می‌شود. لطفاً پیام را به صورت متن بدون عکس/ویدیو/استیکر/فایل بفرستید.")
-        return
+# اگر پیام متنی نبود
+if not update.message.text:
+    await update.message.reply_text("فقط «متن» پذیرفته می‌شود. لطفاً پیام را به صورت متن بدون عکس/ویدیو/استیکر/فایل بفرستید.")
+    return
 
     text = update.message.text or ""
     group_id = int(row["group_id"])
