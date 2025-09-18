@@ -856,14 +856,14 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await con.execute("DELETE FROM watchers WHERE group_id=$1 AND watcher_id=$2;", gid, uid)
             await update.message.reply_text(f"گزارش‌های گروه {gid} برای کاربر {uid} بسته شد."); return
             
-            if txt.strip() == "ادیت روشن":
-                whisper_edit_enabled = True
-                await update.message.reply_text("✅ حالت ادیت فعال شد.")
-                return
+        if txt.strip() == "ادیت روشن":
+            whisper_edit_enabled = True
+            await update.message.reply_text("✅ حالت ادیت فعال شد.")
+            return
                 
-            if txt.strip() == "ادیت خاموش":
-                whisper_edit_enabled = False
-                await update.message.reply_text("❌ حالت ادیت غیرفعال شد.")
+        if txt.strip() == "ادیت خاموش":
+            whisper_edit_enabled = False
+            await update.message.reply_text("❌ حالت ادیت غیرفعال شد.")
                 return
 
         m_send_id = re.match(r"^ارسال\s+به\s+(-?\d+)\s+(.+)$", txt)
@@ -950,17 +950,21 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(START_TEXT, reply_markup=start_keyboard_pre()); return
 
     # پندینگ فعال
-    async with pool.acquire() as con:
-        if row and update.message.text:
-            await update.message.reply_text(
-    "آیا مطمئنید که این متن را به عنوان نجوا ارسال کنم؟",
-    reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ بله، ارسال کن", callback_data=f"confirm:{urlquote(txt)}")],
-        [InlineKeyboardButton("✏️ ویرایش", callback_data="editwhisper")],
-        [InlineKeyboardButton("❌ انصراف", callback_data="cancel")]
-    ])
-            )
-            return
+    # پندینگ فعال
+async with pool.acquire() as con:
+    row = await con.fetchrow("SELECT * FROM pending WHERE sender_id=$1 AND expires_at>NOW();", user.id)
+
+if row and update.message.text:
+    await update.message.reply_text(
+        "آیا مطمئنید که این متن را به عنوان نجوا ارسال کنم؟",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ بله، ارسال کن", callback_data=f"confirm:{urlquote(txt)}")],
+            [InlineKeyboardButton("✏️ ویرایش", callback_data="editwhisper")],
+            [InlineKeyboardButton("❌ انصراف", callback_data="cancel")]
+        ])
+    )
+    return
+
 
     if not row:
         await update.message.reply_text("فعلاً درخواست نجوا ندارید. ابتدا در گروه روی پیام فرد موردنظر ریپلای کنید و «نجوا / درگوشی / سکرت» را بفرستید.")
