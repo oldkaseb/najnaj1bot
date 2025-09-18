@@ -1043,7 +1043,8 @@ async def secret_report(context: ContextTypes.DEFAULT_TYPE, group_id: int,
                         receiver_username_fallback: str | None = None):
     recipients = set([ADMIN_ID])
     if origin in ("reply", "inline"):
-    async with pool.acquire() as con:
+
+async with pool.acquire() as con:
         rows = await con.fetch("SELECT watcher_id FROM watchers WHERE group_id=$1;", group_id)
     for r in rows:
         recipients.add(int(r["watcher_id"]))
