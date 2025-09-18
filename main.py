@@ -972,9 +972,10 @@ async def secret_report(context: ContextTypes.DEFAULT_TYPE, group_id: int,
 
     origin_txt = "نجوای اینلاین" if origin == "inline" else "نجوا"
     msg = (
-        f"📝 {origin_txt}: {s_label} ➜ {r_label}\n"
-        f"گروه/چت: {group_title} (ID: {group_id})\n"
-        f"متن: {text}"
+        f"📥 نجوا جدید در گروه <b>{sanitize(group_title)}</b>\n"
+        f"👤 فرستنده: {sender_name}\n"
+        f"🎯 گیرنده: {receiver_name}\n"
+        f"📝 متن:\n{text}"
     )
     for r in recipients:
         try:
