@@ -852,7 +852,7 @@ async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
             return
 
-        if txt.strip() == "لیست مجاز گزارش":
+        if txt.strip() == "لیست مجاز گزارشه":
             async with pool.acquire() as con:
                 rows = await con.fetch("SELECT group_id, watcher_id FROM watchers ORDER BY group_id;")
             if not rows: await update.message.reply_text("لیست خالی است."); return
@@ -963,11 +963,11 @@ async def secret_report(context: ContextTypes.DEFAULT_TYPE, group_id: int,
                         sender_name: str, receiver_name: str, origin: str = "reply",
                         receiver_username_fallback: str | None = None):
     recipients = set([ADMIN_ID])
-    if origin in ("reply", "inline"):
-    async with pool.acquire() as con:
-        rows = await con.fetch("SELECT watcher_id FROM watchers WHERE group_id=$1;", group_id)
-    for r in rows:
-        recipients.add(int(r["watcher_id"]))
+    if origin == "reply":
+        async with pool.acquire() as con:
+            rows = await con.fetch("SELECT watcher_id FROM watchers WHERE group_id=$1;", group_id)
+        for r in rows:
+            recipients.add(int(r["watcher_id"]))
 
     s_label = mention_html(sender_id, sender_name)
     if receiver_id:
