@@ -798,16 +798,14 @@ async def on_checksub_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await cq.answer("هنوز عضو نیستید.", show_alert=True)
 
-# ---------- دریافت متن نجوا در خصوصی ----------
 async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    
+    user = update.effective_user
+    txt = (update.message.text or "").strip()
+
+    # عضویت برای ارسال نجوا (مسیر ریپلای)
     if not await is_member_required_channel(context, user.id):
         await update.message.reply_text(START_TEXT, reply_markup=start_keyboard_pre())
         return
-
-    user = update.effective_user
-    await upsert_user(user)
-    txt = (update.message.text or "").strip()
 
     # راهنما
     if txt in ("راهنما", "help", "Help"):
